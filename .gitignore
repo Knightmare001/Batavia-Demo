@@ -1,0 +1,65 @@
+# Dependency, runtime lokal, hasil build dan cache.
+node_modules/
+.runtime/
+dist/
+.vite/
+.vite-temp/
+.codegraph/
+coverage/
+*.log
+*.tsbuildinfo
+__pycache__/
+.DS_Store
+Thumbs.db
+
+# Konfigurasi rahasia. Template aman tetap disertakan.
+.env
+.env.*
+!.env.contoh
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Database kerja, cadangan, unggahan dan log. Migrasi Prisma tetap disertakan.
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.bak
+/backend-lab/storage/
+/backend-lab/storage-private/
+/backend-lab/logs/
+
+# Konteks AI, catatan sesi dan dokumen pengguna tetap lokal, tidak dihapus.
+/Additional_Context/
+/Delayed Task/
+/context-handoff/
+/User document/
+/wms-Midas-skills-review/
+/PRODUCT.md
+/DESIGN.md
+/adr/
+/.claude/
+/.hermes/
+/.agents/
+/AGENTS.md
+/CLAUDE.md
+
+# Proyek/screenshot/dokumen referensi bukan artefak aplikasi Batavia.
+/wms-Midas/
+/Midas Screenshot/
+/Dokumentasi Saya Owner/
+
+# Dokumentasi publik dibatasi pada panduan yang dibutuhkan pengguna/developer.
+/docs/*
+!/docs/PANDUAN-MENJALANKAN-LAB.md
+!/docs/PANDUAN-GIT.md

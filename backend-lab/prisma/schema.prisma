@@ -1,0 +1,319 @@
+// Prisma schema untuk Memoria Lab (SQLite).
+// Produksi memakai schema yang hampir identik dengan provider postgresql
+// dan beberapa penyesuaian (lihat backend/prisma/schema.prisma kelak).
+//
+// Aturan portabilitas (ADR 0001):
+//   - Jangan pakai fitur JSON query SQL (operator ->>, ?). Field JSON disimpan
+//     sebagai string TEXT dan di-parse di app layer.
+//   - Jangan pakai citext, jsonb operators, atau extension Postgres.
+//   - Enum SQLite tidak native -> pakai String + validasi di app.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// === Pengguna & peran ===
+
+model User {
+  id                      String   @id @default(uuid())
+  email                   String   @unique
+  nama_lengkap            String
+  password_hash           String
+  peran                   String   // superadmin, tata_usaha, kepala_sekolah, kepala_bagian, guru_staf
+  bagian_id               String?
+  aktif                   Boolean  @default(true)
+  bisa_hapus              Boolean  @default(false)
+  password_changed_at     DateTime @default(now())
+  totp_secret_enc         String?  // enkripsi at-rest di iterasi lanjut; lab biarkan plain untuk sekarang
+  totp_enabled            Boolean  @default(false)
+  created_at              DateTime @default(now())
+  updated_at              DateTime @updatedAt
+  deleted_at              DateTime?
+
+  bagian                  Bagian?             @relation(fields: [bagian_id], references: [id])
+  permissions             UserPermission[]
+  activity_logs           ActivityLog[]
+  surat_masuk_dibuat      SuratMasuk[]        @relation("SuratMasukDibuat")
+  surat_keluar_dibuat     SuratKeluar[]       @relation("SuratKeluarDibuat")
+  disposisi_dibuat        Disposisi[]         @relation("DisposisiDibuat")
+  disposisi_diterima      Disposisi[]         @relation("DisposisiDiterima")
+  tindak_lanjut           TindakLanjut[]
+  lampiran_diupload       Lampiran[]
+  idempotency_keys        IdempotencyKey[]
+
+  @@index([deleted_at])
+  @@index([peran])
+}
+
+model Bagian {
+  id          String   @id @default(uuid())
+  nama        String   @unique
+  singkatan   String   @unique
+  aktif       Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+  deleted_at  DateTime?
+
+  users       User[]
+  disposisi   Disposisi[]
+
+  @@index([deleted_at])
+}
+
+model UserPermission {
+  id         String   @id @default(uuid())
+  user_id    String
+  resource   String   // surat_masuk, surat_keluar, disposisi, user, dsb.
+  action     String   // create, read, update, delete
+  allowed    Boolean
+  created_at DateTime @default(now())
+
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, resource, action])
+}
+
+// === Klasifikasi + Agenda ===
+
+model Klasifikasi {
+  id                   String   @id @default(uuid())
+  kode                 String   @unique         // KS.01, KW.02, dsb.
+  nama                 String
+  urutan               Int      @default(0)
+  retensi_tahun        Int      @default(10)
+  format_registrasi    String?                   // override format kalau klien beda; null = default
+  aktif                Boolean  @default(true)
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
+  deleted_at           DateTime?
+
+  surat_masuk          SuratMasuk[]
+  surat_keluar         SuratKeluar[]
+  agenda               Agenda[]
+
+  @@index([deleted_at])
+}
+
+// Agenda: nomor_urut_terakhir per (tahun, jenis, klasifikasi).
+// Pengambilan nomor baru WAJIB di dalam prisma.$transaction supaya
+// race antara dua create tidak menghasilkan nomor sama (lihat
+// backend-lab/src/services/agenda.service.js).
+model Agenda {
+  id                     String   @id @default(uuid())
+  tahun                  Int
+  jenis                  String   // masuk, keluar
+  klasifikasi_id         String
+  nomor_urut_terakhir    Int      @default(0)
+  updated_at             DateTime @updatedAt
+
+  klasifikasi            Klasifikasi @relation(fields: [klasifikasi_id], references: [id])
+
+  @@unique([tahun, jenis, klasifikasi_id])
+}
+
+// === Surat & disposisi ===
+
+model NomorSuratSequence {
+  tahun Int
+  jenis String
+  nomor Int @default(0)
+
+  @@id([tahun, jenis])
+}
+
+model SuratMasuk {
+  id                     String   @id @default(uuid())
+  nomor_registrasi       String   @unique
+  nomor_surat            String                    // nomor di surat fisik dari pengirim
+  pengirim               String
+  tanggal_surat          DateTime
+  tanggal_terima         DateTime
+  perihal                String
+  klasifikasi_id         String
+  jenis_surat_id         String?
+  status                 String   @default("diterima") // diterima, dibaca_pimpinan, didisposisi, selesai, diarsipkan
+  sensitif               Boolean  @default(false)
+  dibuat_oleh            String
+  created_at             DateTime @default(now())
+  updated_at             DateTime @updatedAt
+  deleted_at             DateTime?
+
+  jenis_surat            JenisSurat? @relation(fields: [jenis_surat_id], references: [id])
+  klasifikasi            Klasifikasi @relation(fields: [klasifikasi_id], references: [id])
+  pembuat                User        @relation("SuratMasukDibuat", fields: [dibuat_oleh], references: [id])
+  disposisi              Disposisi[]
+
+  @@index([deleted_at])
+  @@index([status])
+  @@index([tanggal_surat])
+}
+
+model SuratKeluar {
+  id                     String   @id @default(uuid())
+  nomor_registrasi       String   @unique
+  nomor_surat            String
+  tujuan                 String
+  tanggal_surat          DateTime
+  perihal                String
+  klasifikasi_id         String
+  jenis_surat_id         String?
+  status                 String   @default("draft") // draft, menunggu_tanda_tangan, disetujui, terkirim, diarsipkan
+  sensitif               Boolean  @default(false)
+  dibuat_oleh            String
+  created_at             DateTime @default(now())
+  updated_at             DateTime @updatedAt
+  deleted_at             DateTime?
+
+  jenis_surat            JenisSurat? @relation(fields: [jenis_surat_id], references: [id])
+  klasifikasi            Klasifikasi @relation(fields: [klasifikasi_id], references: [id])
+  pembuat                User        @relation("SuratKeluarDibuat", fields: [dibuat_oleh], references: [id])
+
+  @@index([deleted_at])
+  @@index([status])
+  @@index([tanggal_surat])
+}
+
+model Disposisi {
+  id                     String   @id @default(uuid())
+  surat_masuk_id         String
+  dari_user_id           String
+  ke_bagian_id           String
+  ke_user_id             String?
+  catatan                String?
+  instruksi              String
+  deadline               DateTime?
+  status                 String   @default("baru") // baru, dibaca, diproses, selesai
+  dibaca_at              DateTime?
+  created_at             DateTime @default(now())
+  updated_at             DateTime @updatedAt
+  deleted_at             DateTime?
+
+  surat_masuk            SuratMasuk     @relation(fields: [surat_masuk_id], references: [id])
+  dari                   User           @relation("DisposisiDibuat", fields: [dari_user_id], references: [id])
+  ke_bagian              Bagian         @relation(fields: [ke_bagian_id], references: [id])
+  ke_user                User?          @relation("DisposisiDiterima", fields: [ke_user_id], references: [id])
+  tindak_lanjut          TindakLanjut[]
+
+  @@index([deleted_at])
+  @@index([status])
+  @@index([ke_bagian_id, status])
+  @@index([ke_user_id, status])
+}
+
+model TindakLanjut {
+  id             String   @id @default(uuid())
+  disposisi_id   String
+  oleh_user_id   String
+  catatan        String
+  selesai_at     DateTime?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  disposisi      Disposisi @relation(fields: [disposisi_id], references: [id])
+  oleh           User      @relation(fields: [oleh_user_id], references: [id])
+
+  @@index([disposisi_id])
+}
+
+// === Lampiran polimorfik ===
+// (entitas_jenis, entitas_id) menunjuk ke SuratMasuk / SuratKeluar / TindakLanjut.
+// Prisma tidak enforce FK polimorfik; validasi dilakukan di lampiran.service.js
+// sebelum insert dan sebelum serve download.
+
+model Lampiran {
+  id              String   @id @default(uuid())
+  entitas_jenis   String   // surat_masuk, surat_keluar, tindak_lanjut
+  entitas_id      String
+  nama_asli       String
+  path_relatif    String   // UUID + extension; disimpan di STORAGE_DIR
+  mime            String
+  ukuran_byte     Int
+  sha256          String
+  diupload_oleh   String
+  created_at      DateTime @default(now())
+  deleted_at      DateTime?
+
+  pengupload      User     @relation(fields: [diupload_oleh], references: [id])
+
+  @@index([entitas_jenis, entitas_id])
+  @@index([deleted_at])
+}
+
+// === Audit log append-only + rantai hash ===
+
+model ActivityLog {
+  id              String   @id @default(uuid())
+  user_id         String?
+  nama_user       String                    // snapshot nama saat aksi, aman kalau user dihapus
+  aksi            String   // create, update, delete, restore, login_sukses, login_gagal, perubahan_izin, dsb.
+  entitas         String   // nama resource, mis. "surat_masuk"
+  entitas_id      String?
+  detail          String?
+  ip              String?
+  prev_hash       String?                   // hash row sebelumnya (null untuk row pertama)
+  row_hash        String                    // SHA256 field + prev_hash
+  created_at      DateTime @default(now())
+
+  user            User?    @relation(fields: [user_id], references: [id])
+
+  @@index([entitas, entitas_id])
+  @@index([user_id])
+  @@index([created_at])
+}
+
+// === Idempotency key ===
+
+model IdempotencyKey {
+  id              String   @id @default(uuid())
+  user_id         String
+  path            String
+  key             String
+  response_hash   String
+  response_body   String                    // JSON string
+  response_status Int
+  created_at      DateTime @default(now())
+
+  user            User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, path, key])
+  @@index([created_at])
+}
+
+// === Katalog: JenisSurat & JenisArsip ===
+// Dua model paralel supaya tidak mencampur klasifikasi tulis-menulis
+// dengan klasifikasi arsip permanen. Keduanya di-manage di satu
+// halaman UI "Katalog" (lihat frontend-lab/src/pages/Katalog.jsx).
+// Service katalog menerima parameter jenis dari daftar putih tetap --
+// nama tabel tidak boleh berasal dari input mentah.
+
+model JenisSurat {
+  id          String   @id @default(uuid())
+  kode        String   @unique            // izin, dispensasi, perintah, pernyataan, imbauan, ...
+  nama        String
+  keterangan  String?
+  aktif       Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  surat_masuk SuratMasuk[]
+  surat_keluar SuratKeluar[]
+
+  @@index([aktif])
+}
+
+model JenisArsip {
+  id          String   @id @default(uuid())
+  kode        String   @unique            // sk, mou, laporan, agenda, notulen, ...
+  nama        String
+  keterangan  String?
+  aktif       Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([aktif])
+}
